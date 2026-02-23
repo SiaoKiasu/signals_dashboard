@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S&L Bro. Quant Analytics</title>
+    <!-- 引入 ECharts -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0b0e14;
+            --panel-bg: #151924;
+            --text-main: #d1d4dc;
+            --text-muted: #787b86;
+            --accent-blue: #2962ff;
+            --accent-hover: #1e53e5;
+            --signal-red: #f23645;
+            --signal-yellow: #f8cb46;
+            --grid-line: #2a2e39;
+        }
+        
+        body {
+            margin: 0;
+            padding: 24px;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--grid-line);
+        }
+
+        h2 { 
+            margin: 0; 
+            font-size: 20px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            color: #fff;
+        }
+
+        .header-sub {
+            color: var(--text-muted);
+            font-size: 13px;
+            margin-left: 12px;
+            font-weight: 400;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-group button {
+            background-color: transparent;
+            color: var(--text-main);
+            border: 1px solid var(--grid-line);
+            padding: 6px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-group button:hover {
+            border-color: var(--text-muted);
+            color: #fff;
+        }
+
+        .btn-group button.active {
+            background-color: rgba(41, 98, 255, 0.15);
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+
+        #chart-container {
+            width: 100%;
+            height: 75vh;
+            background-color: var(--panel-bg);
+            border-radius: 8px;
+            padding: 16px 8px 8px 8px;
+            box-sizing: border-box;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+            border: 1px solid var(--grid-line);
+        }
+
+        /* 覆盖 ECharts 默认 tooltip 样式以匹配深色主题 */
+        .custom-tooltip {
+            background: rgba(21, 25, 36, 0.95) !important;
+            border: 1px solid var(--grid-line) !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5) !important;
+            border-radius: 6px !important;
+            padding: 12px 16px !important;
+            color: var(--text-main) !important;
+            backdrop-filter: blur(4px);
+        }
+        .tooltip-header {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            border-bottom: 1px solid var(--grid-line);
+            padding-bottom: 6px;
+        }
+        .tooltip-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 6px 0;
+            font-size: 13px;
+            gap: 24px;
+        }
+        .tooltip-label { color: var(--text-muted); }
+        .tooltip-value { font-family: monospace; font-weight: 600; font-size: 14px; color: #fff; }
+        .tooltip-signal { color: var(--signal-red); font-weight: bold; }
+        .tooltip-prob { color: var(--signal-yellow); font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div>
+            <h2>S&L Bro. Analytics<span class="header-sub">Algorithm Signal Backtest</span></h2>
+        </div>
+        <div class="btn-group" id="signal-buttons"></div>
+    </div>
+
+    <!-- 图表容器 -->
+    <div id="chart-container"></div>
+
+    <script>
+        // 配置要展示的信号
+        const AVAILABLE_SIGNALS = ['signal1', 'signal2'];
+        let currentSignal = 'signal1';
+        let rawData = [];
+        // 用于快速通过日期查找数据的 Map，方便 Tooltip 渲染
+        let dataMap = new Map();
+        
+        // 初始化 ECharts (不使用内置 dark，完全自定义颜色)
+        const chart = echarts.init(document.getElementById('chart-container'));
+
+        function renderChart(signalKey) {
+            currentSignal = signalKey;
+            
+            // 更新按钮 UI
+            document.querySelectorAll('.btn-group button').forEach(btn => {
+                btn.className = btn.dataset.signal === signalKey ? 'active' : '';
+            });
+
+            const dates = [];
+            const prices = [];
+            const triggerPoints = [];
+            const highProbPoints = [];
+
+            // 你提到想看概率，这里推断 json 里有 proba1 / proba2 等字段与 signal1 / signal2 对应
+            const probaKey = signalKey.replace('signal', 'proba');
+
+            rawData.forEach(item => {
+                dates.push(item.date);
+                prices.push(item.price);
+                
+                const sigVal = item[signalKey];
+                
+                if (sigVal === 1 || sigVal === 2 || sigVal === 5) {
+                    triggerPoints.push({
+                        coord: [item.date, item.price],
+                        value: sigVal // 内部保留用来判断，但不显示在UI上
+                    });
+                } else if (sigVal === 3) {
+                    highProbPoints.push({
+                        coord: [item.date, item.price],
+                        value: sigVal
+                    });
+                }
+            });
+
+            const option = {
+                backgroundColor: 'transparent',
+                // 自定义美化 Tooltip
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { 
+                        type: 'cross',
+                        lineStyle: { color: '#444', width: 1, type: 'dashed' },
+                        crossStyle: { color: '#444', width: 1, type: 'dashed' }
+                    },
+                    padding: 0,
+                    formatter: function(params) {
+                        // params[0] 是价格曲线的点
+                        const dataIndex = params[0].dataIndex;
+                        const item = rawData[dataIndex];
+                        const dateStr = item.date;
+                        const price = item.price;
+                        const sigVal = item[currentSignal];
+                        const probVal = item[probaKey] || 0; // 读取对应概率
+
+                        let extraHtml = '';
+                        
+                        if (sigVal === 1 || sigVal === 2 || sigVal === 5) {
+                            extraHtml += `<div class="tooltip-row">
+                                <span class="tooltip-label">Status</span>
+                                <span class="tooltip-signal">🔴 触发卖出</span>
+                            </div>`;
+                        } else if (sigVal === 3) {
+                            // 这里按你要求，只展示概率不重复展示价格，把概率格式化为百分比
+                            const probPercent = (probVal * 100).toFixed(2) + '%';
+                            extraHtml += `<div class="tooltip-row">
+                                <span class="tooltip-label">Status</span>
+                                <span class="tooltip-prob">🟡 高概率警报</span>
+                            </div>
+                            <div class="tooltip-row">
+                                <span class="tooltip-label">Probability</span>
+                                <span class="tooltip-value" style="color: var(--signal-yellow)">${probPercent}</span>
+                            </div>`;
+                        }
+
+                        return `
+                        <div class="custom-tooltip">
+                            <div class="tooltip-header">${dateStr}</div>
+                            <div class="tooltip-row">
+                                <span class="tooltip-label">Price</span>
+                                <span class="tooltip-value">${price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 4})}</span>
+                            </div>
+                            ${extraHtml}
+                        </div>`;
+                    }
+                },
+                legend: {
+                    data: ['Price', '买入信号', '高概率预警'],
+                    textStyle: { color: '#787b86', fontSize: 12 },
+                    top: 0,
+                    icon: 'circle',
+                    itemWidth: 8,
+                    itemHeight: 8
+                },
+                grid: {
+                    left: '2%', right: '4%', bottom: '12%', top: '10%', containLabel: true
+                },
+                dataZoom: [
+                    { 
+                        type: 'inside', start: 60, end: 100 
+                    },
+                    { 
+                        type: 'slider', 
+                        start: 60, end: 100,
+                        bottom: '2%',
+                        height: 24,
+                        borderColor: 'transparent',
+                        backgroundColor: '#151924',
+                        fillerColor: 'rgba(41, 98, 255, 0.1)',
+                        dataBackground: {
+                            lineStyle: { color: '#2a2e39', width: 1 },
+                            areaStyle: { color: '#2a2e39', opacity: 0.2 }
+                        },
+                        selectedDataBackground: {
+                            lineStyle: { color: '#2962ff', width: 1 },
+                            areaStyle: { color: '#2962ff', opacity: 0.2 }
+                        },
+                        handleStyle: {
+                            color: '#d1d4dc',
+                            borderColor: '#151924'
+                        },
+                        textStyle: { color: '#787b86' }
+                    }
+                ],
+                xAxis: {
+                    type: 'category',
+                    data: dates,
+                    boundaryGap: false,
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    axisLabel: { color: '#787b86', margin: 12 }
+                },
+                yAxis: {
+                    type: 'value',
+                    scale: true,
+                    position: 'right', // 价格轴放到右边，更符合金融图表习惯
+                    splitLine: { lineStyle: { color: '#2a2e39', type: 'dashed' } },
+                    axisLabel: { 
+                        color: '#787b86',
+                        formatter: (value) => value.toLocaleString() 
+                    }
+                },
+                series: [
+                    // 主价格线
+                    {
+                        name: 'Price',
+                        type: 'line',
+                        data: prices,
+                        smooth: false, // 金融图表通常不用平滑曲线，保持真实折线
+                        symbol: 'none',
+                        lineStyle: { color: '#2962ff', width: 1.5 },
+                        areaStyle: {
+                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                { offset: 0, color: 'rgba(41, 98, 255, 0.2)' },
+                                { offset: 1, color: 'rgba(41, 98, 255, 0)' }
+                            ])
+                        },
+                        markPoint: {
+                            symbolSize: 10,
+                            symbol: 'circle',
+                            data: triggerPoints,
+                            itemStyle: { 
+                                color: '#f23645',
+                                shadowColor: 'rgba(242, 54, 69, 0.5)',
+                                shadowBlur: 10
+                            },
+                            label: { show: false } // 不显示底层数值 1/2/5
+                        }
+                    },
+                    // 仅用于图例展示
+                    {
+                        name: '买入信号',
+                        type: 'scatter',
+                        data: [],
+                        itemStyle: { color: '#f23645' }
+                    },
+                    // 高概率点
+                    {
+                        name: '高概率预警',
+                        type: 'line',
+                        data: prices,
+                        symbol: 'none',
+                        lineStyle: { width: 0 },
+                        markPoint: {
+                            symbolSize: 10,
+                            symbol: 'circle',
+                            data: highProbPoints,
+                            itemStyle: { 
+                                color: '#f8cb46',
+                                shadowColor: 'rgba(248, 203, 70, 0.5)',
+                                shadowBlur: 10
+                            },
+                            label: { show: false } // 不显示底层数值 3
+                        }
+                    }
+                ]
+            };
+
+            chart.setOption(option);
+        }
+
+        function initButtons() {
+            const container = document.getElementById('signal-buttons');
+            container.innerHTML = '';
+            AVAILABLE_SIGNALS.forEach(sig => {
+                const btn = document.createElement('button');
+                // 让按钮名字更好看
+                btn.innerText = sig.toUpperCase().replace('SIGNAL', 'SIGNAL ');
+                btn.dataset.signal = sig;
+                btn.onclick = () => renderChart(sig);
+                container.appendChild(btn);
+            });
+        }
+
+        async function loadData() {
+            try {
+                const response = await fetch('./signal_data.json');
+                const json = await response.json();
+                rawData = json.data.signal_list;
+                
+                // 建立映射方便 tooltip 查询
+                rawData.forEach(item => {
+                    dataMap.set(item.date, item);
+                });
+                
+                initButtons();
+                renderChart(AVAILABLE_SIGNALS[0]);
+            } catch (err) {
+                console.error("数据加载失败:", err);
+                document.getElementById('chart-container').innerHTML = 
+                    `<div style="color:#f23645; text-align:center; margin-top:20%; font-size:14px;">
+                        Data mapping failed. Please ensure signal_data.json is in the same directory and you are running a local HTTP server.
+                    </div>`;
+            }
+        }
+
+        window.addEventListener('resize', () => chart.resize());
+        loadData();
+    </script>
+</body>
+</html>
