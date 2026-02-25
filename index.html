@@ -43,6 +43,9 @@
             font-weight: 600;
             letter-spacing: 0.5px;
             color: #fff;
+            white-space: nowrap;          /* 标题不要换行 */
+            overflow: hidden;             /* 视口过窄时不撑爆布局 */
+            text-overflow: ellipsis;
         }
 
         .header-sub {
@@ -50,14 +53,58 @@
             font-size: 13px;
             margin-left: 12px;
             font-weight: 400;
+            white-space: nowrap;          /* “Algorithm Signals” 不要拆行 */
         }
 
-        .btn-group {
+        /* 信号分类分组（替代原 btn-group 单排按钮） */
+        .signal-groups {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            align-items: flex-start;
+            width: 100%;
+        }
+
+        .signal-group {
+            background-color: rgba(21, 25, 36, 0.55);
+            border: 1px solid var(--grid-line);
+            border-radius: 10px;
+            padding: 10px 10px 8px 10px;
+            min-width: 220px;
+            box-sizing: border-box;
+        }
+
+        .signal-group-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .signal-group-title {
+            font-size: 12px;
+            color: #fff;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            user-select: none;
+            cursor: help; /* 提示可悬停看说明 */
+        }
+
+        .signal-group-sub {
+            font-size: 11px;
+            color: var(--text-muted);
+            user-select: none;
+        }
+
+        .signal-group-buttons {
             display: flex;
             gap: 8px;
+            flex-wrap: wrap;
         }
 
-        .btn-group button {
+        .signal-group-buttons button {
             background-color: transparent;
             color: var(--text-main);
             border: 1px solid var(--grid-line);
@@ -69,15 +116,41 @@
             transition: all 0.2s ease;
         }
 
-        .btn-group button:hover {
+        .signal-group-buttons button:hover {
             border-color: var(--text-muted);
             color: #fff;
         }
 
-        .btn-group button.active {
+        .signal-group-buttons button.active {
             background-color: rgba(41, 98, 255, 0.15);
             border-color: var(--accent-blue);
             color: var(--accent-blue);
+        }
+
+        /* 分类说明浮层 */
+        .category-tooltip {
+            position: fixed;
+            z-index: 9999;
+            max-width: 420px;
+            background: rgba(21, 25, 36, 0.96);
+            border: 1px solid var(--grid-line);
+            box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+            border-radius: 10px;
+            padding: 10px 12px;
+            color: var(--text-main);
+            font-size: 12px;
+            line-height: 1.55;
+            pointer-events: none;
+            display: none;
+        }
+        .category-tooltip .t-title {
+            color: #fff;
+            font-weight: 700;
+            font-size: 12px;
+            margin-bottom: 6px;
+        }
+        .category-tooltip .t-desc {
+            color: var(--text-main);
         }
 
         #chart-container {
@@ -126,18 +199,66 @@
 
     <div class="header">
         <div>
-            <h2>S&L Bro. Analytics<span class="header-sub">Algorithm Signal Backtest</span></h2>
+            <h2>S&L Bro. Portal<span class="header-sub">Algorithm Signals</span></h2>
         </div>
-        <div class="btn-group" id="signal-buttons"></div>
+        <div class="signal-groups" id="signal-groups"></div>
     </div>
 
     <!-- 图表容器 -->
     <div id="chart-container"></div>
+    <div id="category-tooltip" class="category-tooltip"></div>
 
     <script>
-        // 配置要展示的信号
-        const AVAILABLE_SIGNALS = ['signal1', 'signal2'];
-        let currentSignal = 'signal1';
+        // 配置要展示的信号（按你给的顺序）
+        const AVAILABLE_SIGNALS = ['signal2', 'signal7', 'signal9', 'signal18'];
+
+        // 分类方案（示例文案：你后续自己补充/改写即可）
+        const SIGNAL_CATEGORIES = {
+            crash_down: {
+                title: '大跌信号',
+                desc: '触发后至少伴随 5% 以上的跌幅，可直接做空。'
+            },
+            surge_up: {
+                title: '大涨信号',
+                desc: '触发后伴随 10% 以上涨幅，通常需要连续触发 20+ 天/不再触发后做多。'
+            },
+            cyclical_short: {
+                title: '周期性空头',
+                desc: '触发后通常先跌 3%-5% 再涨 10% 以上，可以先做空再做多。'
+            }
+        };
+
+        // 信号配置：显示名 + 分类 + 特性开关
+        // 规则：1/2/5 都算“触发”；只有 signal2 会出现 3=高概率预警
+        const SIGNAL_CONFIG = {
+            signal2:  { name: 'CrashRF_DOWN',   category: 'crash_down',     hasHighProb: true  },
+            signal7:  { name: 'SurgeGB_UP',     category: 'surge_up',       hasHighProb: false },
+            signal9:  { name: 'CyclicalLG_D2U', category: 'cyclical_short', hasHighProb: false },
+            signal18: { name: 'CrashMLP_DOWN',  category: 'crash_down',     hasHighProb: false },
+        };
+
+        // 数据预处理：指定日期的 signal2 强制视为“触发(5)”而不是“高概率(3)”
+        // 支持输入格式如 2026/2/18、2026-02-18、以及带时间的字符串
+        const FORCE_SIGNAL2_TO_TRIGGER_DATES = new Set([
+            '2026-02-18',
+            '2025-11-17',
+            '2025-03-06',
+        ]);
+
+        function normalizeDateKey(dateStr) {
+            if (!dateStr) return '';
+            // 取日期部分（防止 'YYYY-MM-DDTHH:mm:ss'）
+            const s0 = String(dateStr).trim().split('T')[0].split(' ')[0];
+            const s = s0.replaceAll('/', '-');
+            const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+            if (!m) return s;
+            const yyyy = m[1];
+            const mm = m[2].padStart(2, '0');
+            const dd = m[3].padStart(2, '0');
+            return `${yyyy}-${mm}-${dd}`;
+        }
+
+        let currentSignal = AVAILABLE_SIGNALS[0];
         let rawData = [];
         // 用于快速通过日期查找数据的 Map，方便 Tooltip 渲染
         let dataMap = new Map();
@@ -145,11 +266,40 @@
         // 初始化 ECharts (不使用内置 dark，完全自定义颜色)
         const chart = echarts.init(document.getElementById('chart-container'));
 
+        function _tooltipEl() {
+            return document.getElementById('category-tooltip');
+        }
+
+        function showCategoryTooltip(catKey, x, y) {
+            const el = _tooltipEl();
+            const cat = SIGNAL_CATEGORIES[catKey];
+            if (!el || !cat) return;
+
+            el.innerHTML = `<div class="t-title">${cat.title}</div><div class="t-desc">${cat.desc}</div>`;
+            el.style.display = 'block';
+
+            // 简单防溢出：尽量跟随鼠标右下角，超过屏幕就反向
+            const pad = 12;
+            const rect = el.getBoundingClientRect();
+            let left = x + pad;
+            let top = y + pad;
+            if (left + rect.width > window.innerWidth) left = x - rect.width - pad;
+            if (top + rect.height > window.innerHeight) top = y - rect.height - pad;
+            el.style.left = `${Math.max(8, left)}px`;
+            el.style.top = `${Math.max(8, top)}px`;
+        }
+
+        function hideCategoryTooltip() {
+            const el = _tooltipEl();
+            if (!el) return;
+            el.style.display = 'none';
+        }
+
         function renderChart(signalKey) {
             currentSignal = signalKey;
             
             // 更新按钮 UI
-            document.querySelectorAll('.btn-group button').forEach(btn => {
+            document.querySelectorAll('.signal-group-buttons button').forEach(btn => {
                 btn.className = btn.dataset.signal === signalKey ? 'active' : '';
             });
 
@@ -160,6 +310,7 @@
 
             // 你提到想看概率，这里推断 json 里有 proba1 / proba2 等字段与 signal1 / signal2 对应
             const probaKey = signalKey.replace('signal', 'proba');
+            const hasHighProb = !!((SIGNAL_CONFIG[signalKey] || {}).hasHighProb);
 
             rawData.forEach(item => {
                 dates.push(item.date);
@@ -172,13 +323,68 @@
                         coord: [item.date, item.price],
                         value: sigVal // 内部保留用来判断，但不显示在UI上
                     });
-                } else if (sigVal === 3) {
+                } else if (sigVal === 3 && hasHighProb) {
                     highProbPoints.push({
                         coord: [item.date, item.price],
                         value: sigVal
                     });
                 }
             });
+
+            // series：高概率系列仅在 signal2 启用
+            const triggerScatterData = triggerPoints.map(p => p.coord);
+            const highProbScatterData = highProbPoints.map(p => p.coord);
+
+            const series = [
+                // 主价格线
+                {
+                    name: 'Price',
+                    type: 'line',
+                    data: prices,
+                    smooth: false, // 金融图表通常不用平滑曲线，保持真实折线
+                    symbol: 'none',
+                    lineStyle: { color: '#2962ff', width: 1.5 },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: 'rgba(41, 98, 255, 0.2)' },
+                            { offset: 1, color: 'rgba(41, 98, 255, 0)' }
+                        ])
+                    }
+                },
+                // 触发点（独立 scatter 系列，便于 legend 交互隐藏/显示）
+                {
+                    name: '触发信号',
+                    type: 'scatter',
+                    data: triggerScatterData,
+                    symbol: 'circle',
+                    symbolSize: 10,
+                    z: 10,                 // 触发信号永远压在最上层（重叠优先展示）
+                    itemStyle: {
+                        color: '#f23645',
+                        shadowColor: 'rgba(242, 54, 69, 0.5)',
+                        shadowBlur: 10
+                    },
+                    emphasis: { scale: 1.2 }
+                }
+            ];
+
+            if (hasHighProb) {
+                series.push({
+                    name: '高概率预警',
+                    type: 'scatter',
+                    data: highProbScatterData,
+                    symbol: 'circle',
+                    symbolSize: 7,         // 高概率点更小，避免盖住触发点
+                    z: 6,                  // 层级低于触发点（触发点 z=10）
+                    itemStyle: {
+                        color: '#f8cb46',
+                        opacity: 0.9,
+                        shadowColor: 'rgba(248, 203, 70, 0.5)',
+                        shadowBlur: 10
+                    },
+                    emphasis: { scale: 1.1 }
+                });
+            }
 
             const option = {
                 backgroundColor: 'transparent',
@@ -198,21 +404,22 @@
                         const dateStr = item.date;
                         const price = item.price;
                         const sigVal = item[currentSignal];
-                        const probVal = item[probaKey] || 0; // 读取对应概率
+                        const hasHighProb = !!((SIGNAL_CONFIG[currentSignal] || {}).hasHighProb);
+                        const probVal = hasHighProb ? (item[probaKey] || 0) : 0; // 仅 signal2 读取概率
 
                         let extraHtml = '';
                         
                         if (sigVal === 1 || sigVal === 2 || sigVal === 5) {
                             extraHtml += `<div class="tooltip-row">
                                 <span class="tooltip-label">Status</span>
-                                <span class="tooltip-signal">🔴 触发卖出</span>
+                                <span class="tooltip-signal">🟥 触发信号</span>
                             </div>`;
-                        } else if (sigVal === 3) {
+                        } else if (sigVal === 3 && hasHighProb) {
                             // 这里按你要求，只展示概率不重复展示价格，把概率格式化为百分比
                             const probPercent = (probVal * 100).toFixed(2) + '%';
                             extraHtml += `<div class="tooltip-row">
                                 <span class="tooltip-label">Status</span>
-                                <span class="tooltip-prob">🟡 高概率警报</span>
+                                <span class="tooltip-prob">🟨 高概率预警</span>
                             </div>
                             <div class="tooltip-row">
                                 <span class="tooltip-label">Probability</span>
@@ -232,7 +439,7 @@
                     }
                 },
                 legend: {
-                    data: ['Price', '买入信号', '高概率预警'],
+                    data: hasHighProb ? ['Price', '触发信号', '高概率预警'] : ['Price', '触发信号'],
                     textStyle: { color: '#787b86', fontSize: 12 },
                     top: 0,
                     icon: 'circle',
@@ -244,11 +451,11 @@
                 },
                 dataZoom: [
                     { 
-                        type: 'inside', start: 60, end: 100 
+                        type: 'inside', start: 0, end: 100 
                     },
                     { 
                         type: 'slider', 
-                        start: 60, end: 100,
+                        start: 0, end: 100,
                         bottom: '2%',
                         height: 24,
                         borderColor: 'transparent',
@@ -287,75 +494,68 @@
                         formatter: (value) => value.toLocaleString() 
                     }
                 },
-                series: [
-                    // 主价格线
-                    {
-                        name: 'Price',
-                        type: 'line',
-                        data: prices,
-                        smooth: false, // 金融图表通常不用平滑曲线，保持真实折线
-                        symbol: 'none',
-                        lineStyle: { color: '#2962ff', width: 1.5 },
-                        areaStyle: {
-                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                                { offset: 0, color: 'rgba(41, 98, 255, 0.2)' },
-                                { offset: 1, color: 'rgba(41, 98, 255, 0)' }
-                            ])
-                        },
-                        markPoint: {
-                            symbolSize: 10,
-                            symbol: 'circle',
-                            data: triggerPoints,
-                            itemStyle: { 
-                                color: '#f23645',
-                                shadowColor: 'rgba(242, 54, 69, 0.5)',
-                                shadowBlur: 10
-                            },
-                            label: { show: false } // 不显示底层数值 1/2/5
-                        }
-                    },
-                    // 仅用于图例展示
-                    {
-                        name: '买入信号',
-                        type: 'scatter',
-                        data: [],
-                        itemStyle: { color: '#f23645' }
-                    },
-                    // 高概率点
-                    {
-                        name: '高概率预警',
-                        type: 'line',
-                        data: prices,
-                        symbol: 'none',
-                        lineStyle: { width: 0 },
-                        markPoint: {
-                            symbolSize: 10,
-                            symbol: 'circle',
-                            data: highProbPoints,
-                            itemStyle: { 
-                                color: '#f8cb46',
-                                shadowColor: 'rgba(248, 203, 70, 0.5)',
-                                shadowBlur: 10
-                            },
-                            label: { show: false } // 不显示底层数值 3
-                        }
-                    }
-                ]
+                series: series
             };
 
-            chart.setOption(option);
+            // 关键：notMerge 防止从上一个 signal 残留 series/legend（会导致高概率点串到其它信号）
+            chart.setOption(option, { notMerge: true, lazyUpdate: false });
         }
 
         function initButtons() {
-            const container = document.getElementById('signal-buttons');
+            const container = document.getElementById('signal-groups');
             container.innerHTML = '';
-            AVAILABLE_SIGNALS.forEach(sig => {
-                const btn = document.createElement('button');
-                // 让按钮名字更好看
-                btn.innerText = sig.toUpperCase().replace('SIGNAL', 'SIGNAL ');
-                btn.dataset.signal = sig;
-                btn.onclick = () => renderChart(sig);
-                container.appendChild(btn);
+
+            const categoryOrder = ['crash_down', 'surge_up', 'cyclical_short'];
+            categoryOrder.forEach(catKey => {
+                const cat = SIGNAL_CATEGORIES[catKey];
+                if (!cat) return;
+
+                const members = AVAILABLE_SIGNALS.filter(sig => (SIGNAL_CONFIG[sig] || {}).category === catKey);
+                if (members.length === 0) return;
+
+                const group = document.createElement('div');
+                group.className = 'signal-group';
+
+                const header = document.createElement('div');
+                header.className = 'signal-group-header';
+
+                const title = document.createElement('div');
+                title.className = 'signal-group-title';
+                title.innerText = `【${cat.title}】`;
+                title.dataset.category = catKey;
+
+                // hover 展示说明
+                title.addEventListener('mouseenter', (e) => {
+                    showCategoryTooltip(catKey, e.clientX, e.clientY);
+                });
+                title.addEventListener('mousemove', (e) => {
+                    showCategoryTooltip(catKey, e.clientX, e.clientY);
+                });
+                title.addEventListener('mouseleave', () => {
+                    hideCategoryTooltip();
+                });
+
+                const sub = document.createElement('div');
+                sub.className = 'signal-group-sub';
+                sub.innerText = `${members.length} signals`;
+
+                header.appendChild(title);
+                header.appendChild(sub);
+
+                const btns = document.createElement('div');
+                btns.className = 'signal-group-buttons';
+
+                members.forEach(sig => {
+                    const btn = document.createElement('button');
+                    btn.innerText = (SIGNAL_CONFIG[sig] && SIGNAL_CONFIG[sig].name) ? SIGNAL_CONFIG[sig].name : sig.toUpperCase();
+                    btn.dataset.signal = sig;
+                    btn.onclick = () => renderChart(sig);
+                    btns.appendChild(btn);
+                });
+
+                group.appendChild(header);
+                group.appendChild(btns);
+                container.appendChild(group);
             });
         }
 
@@ -363,7 +563,22 @@
             try {
                 const response = await fetch('./signal_data.json');
                 const json = await response.json();
-                rawData = json.data.signal_list;
+                const cutoff = new Date('2022-11-11T00:00:00');
+                const list = (json.data.signal_list || []);
+
+                // 1) 先做信号值改写（画图前）
+                list.forEach(item => {
+                    const key = normalizeDateKey(item.date);
+                    if (FORCE_SIGNAL2_TO_TRIGGER_DATES.has(key)) {
+                        item.signal2 = 5;
+                    }
+                });
+
+                // 2) 再过滤日期（只保留 2022-11-11 之后）
+                rawData = list.filter(item => {
+                    const d = new Date(normalizeDateKey(item.date));
+                    return !isNaN(d.getTime()) && d >= cutoff;
+                });
                 
                 // 建立映射方便 tooltip 查询
                 rawData.forEach(item => {
@@ -386,3 +601,9 @@
     </script>
 </body>
 </html>
+
+
+
+
+<!-- cd /Users/yanglinzi/code/SiaoMeh/SL_Bro./v1.0 -->
+<!-- python3 -m http.server 8000 -->
