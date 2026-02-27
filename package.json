@@ -1,9 +1,0 @@
-{
-  "name": "sl-bro-portal",
-  "private": true,
-  "type": "commonjs",
-  "dependencies": {
-    "@vercel/kv": "^2.0.0"
-  }
-}
-
